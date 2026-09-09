@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>Sindaco Runner - Cementificatore Supremo</title>
+<style>
+  html,body{
+    margin:0; padding:0; height:100%; background:#1a1a2e;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Courier New', monospace; overflow:hidden;
+    touch-action:none;
+  }
+  #wrap{ position:relative; }
+  canvas{
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    background:#7ec8e3;
+    border:4px solid #2b2b2b;
+    box-shadow:0 0 0 4px #d4a017, 0 8px 30px rgba(0,0,0,.6);
+    display:block;
+  }
+  #ui{
+    position:absolute; top:10px; left:10px; right:10px;
+    display:flex; flex-wrap:wrap; row-gap:4px; justify-content:space-between;
+    color:#fff; font-weight:bold; font-size:14px;
+    text-shadow:2px 2px 0 #000;
+    pointer-events:none;
+  }
+  #ui .box{ background:rgba(0,0,0,.35); padding:4px 8px; border-radius:4px; }
+  #hint{
+    position:absolute; bottom:8px; left:0; right:0; text-align:center;
+    color:#fff; font-size:11px; text-shadow:2px 2px 0 #000;
+    transition:opacity 1s; pointer-events:none;
+  }
+  #overlay{
+    position:absolute; inset:0; background:rgba(10,10,20,.88);
+    color:#fff; display:none; flex-direction:column; align-items:center;
+    justify-content:center; text-align:center; font-size:14px; gap:10px;
+    padding:20px; box-sizing:border-box;
+  }
+  #overlay h1{ font-size:22px; margin:0 0 4px; color:#ffd166; }
+  #overlay .stat{ font-size:13px; }
+  #overlay button{
+    margin-top:10px; font-family:inherit; font-size:14px; font-weight:bold;
+    background:#2ecc71; color:#0a3d1f; border:3px solid #1e7e42;
+    padding:10px 22px; border-radius:6px; cursor:pointer;
+  }
+  #overlay button:hover{ background:#3ee081; }
+  #touch{
+    position:absolute; bottom:0; left:0; right:0; display:none;
+    justify-content:space-between; padding:8px; box-sizing:border-box;
+  }
+  #touch button{
+    width:46px; height:46px; font-size:18px; border-radius:50%;
+    border:3px solid #333; background:rgba(255,255,255,.75); opacity:.9;
+  }
+  #touch .side{ display:flex; flex-wrap:wrap; gap:6px; max-width:170px; }
+  @media (pointer:coarse){ #touch{ display:flex; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="320" height="180"></canvas>
+  <div id="ui">
+    <div class="box">🚙 SUV: <span id="statSuv">🚙🚙🚙</span></div>
+    <div class="box">🏗️ Cemento: <span id="statCemento">0</span> mq</div>
+    <div class="box">🌳 Abbattuti: <span id="statAlberi">0</span></div>
+    <div class="box">🅿️ Parcheggi: <span id="statParcheggi">0</span></div>
+    <div class="box">⭐ Punti: <span id="statScore">0</span></div>
+    <div class="box">⏱️ <span id="statTime">90</span>s</div>
+    <button id="muteBtn" class="box" style="pointer-events:auto; cursor:pointer; border:none; font:inherit; color:#fff; font-weight:bold;">🔊</button>
+  </div>
+  <audio id="bgm" src="mula-de-parenzo-motif.mp3" loop preload="auto"></audio>
+  <div id="hint">← → cammina • ↑/SPAZIO salta • A asfalta • S taglia alberi • P parcheggio • X cancella</div>
+  <div id="overlay">
+    <h1 id="ovTitle">Fine mandato!</h1>
+    <div class="stat" id="ovStats"></div>
+    <button id="ovBtn">Ricandidati (rigioca)</button>
+  </div>
+  <div id="touch">
+    <div class="side">
+      <button id="btnLeft">◀</button>
+      <button id="btnRight">▶</button>
+    </div>
+    <div class="side">
+      <button id="btnAsfalta">🛣️</button>
+      <button id="btnTaglia">🪓</button>
+      <button id="btnPark">🅿️</button>
+      <button id="btnUnpark">🗑️</button>
+      <button id="btnJump">⤴</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+// ---------- Setup canvas a bassa risoluzione per effetto pixel-art "a blocconi" ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const W = canvas.width, H = canvas.height;
+
+function fitCanvas(){
+  const scale = Math.floor(Math.min(window.innerWidth/W, window.innerHeight/H, 4.5)) || 1;
+  canvas.style.width = (W*Math.max(scale,2))+'px';
+  canvas.style.height = (H*Math.max(scale,2))+'px';
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
+
+// ---------- Costanti mondo ----------
+const TILE = 16;
+const GROUND_Y = 132;
+const LEVEL_LEN = 70; // numero di tile
+const GRAVITY = 0.55;
+const JUMP_VEL = -8.6;
+const MOVE_SPEED = 1.5;
+const MAX_TIME = 90;
+
+// Palette (facile da cambiare a mano dopo)
+const COL = {
+  sky1:'#7ec8e3', sky2:'#bfe8f7',
+  hillFar:'#5fa86b', hillNear:'#3f8a52',
+  buildingBody:['#c98b5e','#b0785a','#a68a7a'],
+  buildingWin:'#ffe89a',
+  grassTop:'#4caf50', grassBody:'#357a38',
+  dirt:'#8a5a3a',
+  concrete:'#9a9a9a', concreteLine:'#e8e8e8',
+  gapBottom:'#0d1b2a',
+  treeTrunk:'#5c3a21', treeLeaf1:'#2e7d32', treeLeaf2:'#4caf50',
+  suit:'#1c2e6b', suitDark:'#142253', shirt:'#f2f2f2',
+  tie:'#c0392b', skin:'#e8b48a', hair:'#2b2018',
+  sashG:'#009246', sashW:'#f5f5f5', sashR:'#ce2b37',
+  shoe:'#111111',
+  cloud:'#ffffff'
+};
+
+// ---------- Generazione livello ----------
+let tiles = []; // {type:'grass'|'gap', tree:bool, cemented:bool, parking:bool}
+function genLevel(){
+  tiles = [];
+  for(let i=0;i<LEVEL_LEN;i++){
+    let t = {type:'grass', tree:false, cemented:false, parking:false};
+    if(i>4 && i<LEVEL_LEN-4){
+      const prevGap = tiles[i-1] && tiles[i-1].type==='gap';
+      const r = Math.random();
+      if(r<0.12 && !prevGap){
+        t.type='gap';
+      } else {
+        t.type='grass';
+        if(Math.random()<0.35) t.tree=true;
+      }
+    }
+    tiles.push(t);
+  }
+}
+genLevel();
+
+// ---------- Stato di gioco ----------
+let state = {
+  running:true,
+  score:0,
+  cementoMQ:0,
+  alberiTagliati:0,
+  parcheggi:0,
+  suv:3,
+  timeLeft:MAX_TIME,
+  camX:0,
+  ended:false
+};
+
+const player = {
+  x: 2*TILE, y: GROUND_Y-22, w:12, h:22,
+  vx:0, vy:0, onGround:true, facing:1,
+  animT:0, leg:0, actionFlash:0, invuln:0, hitFlash:0
+};
+
+const clouds = [];
+for(let i=0;i<6;i++){
+  clouds.push({x:Math.random()*LEVEL_LEN*TILE, y:10+Math.random()*30, s:0.15+Math.random()*0.2, w:20+Math.random()*16});
+}
+
+// ---------- NPC antagonisti: gabbiani (aria) e ciclisti (strada) ----------
+let seagulls = [];
+let cyclists = [];
+function spawnNPCs(){
+  seagulls = [];
+  for(let i=0;i<7;i++){
+    seagulls.push({
+      x: 6*TILE + Math.random()*(LEVEL_LEN-10)*TILE,
+      baseY: 20 + Math.random()*45,
+      vx: (Math.random()<0.5?-1:1)*(0.6+Math.random()*0.5),
+      phase: Math.random()*10,
+      t: Math.random()*10
+    });
+  }
+  cyclists = [];
+  for(let i=0;i<5;i++){
+    cyclists.push({
+      x: 8*TILE + Math.random()*(LEVEL_LEN-14)*TILE,
+      vx: (Math.random()<0.5?-1:1)*(0.8+Math.random()*0.4),
+      frameT: Math.random()*10
+    });
+  }
+}
+spawnNPCs();
+
+// ---------- Input ----------
+const keys = {};
+window.addEventListener('keydown', e=>{
+  keys[e.key.toLowerCase()] = true;
+  if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(e.key.toLowerCase())) e.preventDefault();
+});
+window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+function bindHold(id, onDown, onUp){
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e=>{ e.preventDefault(); onDown(); });
+  el.addEventListener('touchend', e=>{ e.preventDefault(); onUp && onUp(); });
+  el.addEventListener('mousedown', e=>{ onDown(); });
+  el.addEventListener('mouseup', e=>{ onUp && onUp(); });
+}
+let touchLeft=false, touchRight=false;
+bindHold('btnLeft', ()=>touchLeft=true, ()=>touchLeft=false);
+bindHold('btnRight', ()=>touchRight=true, ()=>touchRight=false);
+bindHold('btnJump', ()=>keys['jumpTouch']=true, ()=>keys['jumpTouch']=false);
+bindHold('btnAsfalta', ()=>asfaltaErba());
+bindHold('btnTaglia', ()=>tagliaAlbero());
+bindHold('btnPark', ()=>buildParking());
+bindHold('btnUnpark', ()=>removeParking());
+
+// ---------- Colonna sonora: parte al primo input (i browser bloccano l'autoplay) ----------
+const bgm = document.getElementById('bgm');
+bgm.volume = 0.45;
+let audioStarted = false;
+function tryStartAudio(){
+  if(audioStarted) return;
+  bgm.play().then(()=>{ audioStarted = true; }).catch(()=>{});
+}
+window.addEventListener('keydown', tryStartAudio);
+window.addEventListener('pointerdown', tryStartAudio);
+
+let muted = false;
+document.getElementById('muteBtn').addEventListener('click', (e)=>{
+  e.stopPropagation();
+  muted = !muted;
+  bgm.muted = muted;
+  document.getElementById('muteBtn').textContent = muted ? '🔇' : '🔊';
+});
+
+// ---------- Effetti sonori sintetizzati (Web Audio API, nessun file esterno) ----------
+let actx = null;
+function getActx(){
+  if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+  return actx;
+}
+
+function beep(freq, dur, type, vol, delay, slideTo){
+  if(muted) return;
+  const ac = getActx();
+  const t0 = ac.currentTime + (delay||0);
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.type = type||'square';
+  osc.frequency.setValueAtTime(freq, t0);
+  if(slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t0+dur);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(vol||0.15, t0+0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0+dur);
+  osc.connect(gain).connect(ac.destination);
+  osc.start(t0);
+  osc.stop(t0+dur+0.02);
+}
+
+const sfx = {
+  asfalta:  ()=>{ beep(140,0.12,'square',0.18); beep(90,0.14,'square',0.12,0.05); },
+  taglia:   ()=>{ beep(600,0.05,'sawtooth',0.15); beep(300,0.08,'sawtooth',0.12,0.04); },
+  parcheggio: ()=>{ beep(523,0.08,'triangle',0.18); beep(784,0.14,'triangle',0.16,0.08); },
+  cancella: ()=>{ beep(300,0.1,'square',0.14,0,150); },
+  salto:    ()=>{ beep(400,0.08,'square',0.1,0,700); },
+  gabbiano: ()=>{ beep(900,0.15,'sawtooth',0.14,0,500); },
+  ciclista: ()=>{ beep(200,0.2,'square',0.18,0,80); },
+  vittoria: ()=>{ [523,659,784,1047].forEach((f,i)=>beep(f,0.18,'triangle',0.16,i*0.12)); },
+  sconfitta:()=>{ beep(300,0.3,'sawtooth',0.15,0,120); }
+};
+
+// ---------- Azioni separate: A asfalta, S taglia alberi ----------
+function asfaltaErba(){
+  if(!state.running) return;
+  const idx = Math.floor((player.x + player.w/2)/TILE);
+  const t = tiles[idx];
+  if(!t) return;
+  if(t.type==='grass' && !t.cemented){
+    t.cemented = true;
+    state.cementoMQ++;
+    state.score += 10;
+    player.actionFlash = 10;
+    sfx.asfalta();
+  }
+}
+
+function tagliaAlbero(){
+  if(!state.running) return;
+  const idx = Math.floor((player.x + player.w/2)/TILE);
+  const t = tiles[idx];
+  if(!t) return;
+  if(t.type==='grass' && t.tree){
+    t.tree = false;
+    state.alberiTagliati++;
+    state.score += 5;
+    player.actionFlash = 10;
+    sfx.taglia();
+  }
+}
+
+// ---------- Parcheggi: si costruiscono solo su cemento già steso ----------
+function buildParking(){
+  if(!state.running) return;
+  const idx = Math.floor((player.x + player.w/2)/TILE);
+  const t = tiles[idx];
+  if(!t) return;
+  if(t.type==='grass' && t.cemented && !t.parking){
+    t.parking = true;
+    state.parcheggi++;
+    state.score += 15;
+    player.actionFlash = 10;
+    sfx.parcheggio();
+  }
+}
+
+function removeParking(){
+  if(!state.running) return;
+  const idx = Math.floor((player.x + player.w/2)/TILE);
+  const t = tiles[idx];
+  if(!t) return;
+  if(t.parking){
+    t.parking = false;
+    state.parcheggi--;
+    state.score = Math.max(0, state.score-5);
+    player.actionFlash = 10;
+    sfx.cancella();
+  }
+}
+
+let lastAsfaltaKey = false;
+let lastTaglioKey = false;
+let lastParkKey = false;
+let lastUnparkKey = false;
+
+// ---------- Fisica / update ----------
+function update(dt){
+  if(!state.running) return;
+
+  state.timeLeft -= dt;
+  if(state.timeLeft<=0){
+    state.timeLeft = 0;
+    endGame('time');
+  }
+
+  // movimento orizzontale (solo frecce, le lettere sono riservate alle azioni)
+  let move = 0;
+  if(keys['arrowleft']||touchLeft) move -= 1;
+  if(keys['arrowright']||touchRight) move += 1;
+  player.vx = move*MOVE_SPEED;
+  if(move!==0) player.facing = move;
+
+  // salto
+  if((keys['arrowup']||keys[' ']||keys['jumptouch']) && player.onGround){
+    player.vy = JUMP_VEL;
+    player.onGround = false;
+    sfx.salto();
+  }
+
+  // A = asfalta erba, S = taglia alberi, P = costruisci parcheggio (largo), X = cancella parcheggio
+  const asfaltaKey = !!keys['a'];
+  if(asfaltaKey && !lastAsfaltaKey) asfaltaErba();
+  lastAsfaltaKey = asfaltaKey;
+
+  const taglioKey = !!keys['s'];
+  if(taglioKey && !lastTaglioKey) tagliaAlbero();
+  lastTaglioKey = taglioKey;
+
+  const parkKey = !!keys['p'];
+  if(parkKey && !lastParkKey) buildParking();
+  lastParkKey = parkKey;
+
+  const unparkKey = !!keys['x'];
+  if(unparkKey && !lastUnparkKey) removeParking();
+  lastUnparkKey = unparkKey;
+
+  // gravità
+  player.vy += GRAVITY;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  player.x = Math.max(0, Math.min(player.x, LEVEL_LEN*TILE - player.w));
+
+  // collisione col terreno (solo se non su una "gap")
+  const centerIdx = Math.floor((player.x+player.w/2)/TILE);
+  const t = tiles[centerIdx];
+  const onSolid = t && t.type==='grass';
+  const groundLevel = GROUND_Y - player.h;
+
+  if(onSolid && player.y >= groundLevel){
+    player.y = groundLevel;
+    player.vy = 0;
+    player.onGround = true;
+  } else {
+    player.onGround = false;
+  }
+
+  // caduta in una buca -> respawn leggero indietro
+  if(player.y > H+20){
+    player.x = Math.max(0, centerIdx-3)*TILE;
+    player.y = GROUND_Y-22;
+    player.vy = 0;
+    state.score = Math.max(0, state.score-3);
+  }
+
+  // animazione gambe
+  if(Math.abs(player.vx)>0.1 && player.onGround){
+    player.animT += dt*10;
+    player.leg = Math.floor(player.animT)%2;
+  } else {
+    player.leg = 0;
+  }
+  if(player.actionFlash>0) player.actionFlash--;
+  if(player.hitFlash>0) player.hitFlash--;
+
+  // camera
+  state.camX = Math.max(0, Math.min(player.x - W/2, LEVEL_LEN*TILE + 40 - W));
+
+  // vittoria: raggiunto il municipio in fondo
+  if(player.x >= (LEVEL_LEN-2)*TILE){
+    endGame('win');
+  }
+
+  // ---- NPC antagonisti: gabbiani e ciclisti ----
+  const LEVEL_PX = LEVEL_LEN*TILE;
+
+  seagulls.forEach(g=>{
+    g.t += 0.06;
+    g.x += g.vx;
+    if(g.x < -20) g.x = LEVEL_PX+20;
+    if(g.x > LEVEL_PX+20) g.x = -20;
+    g.y = g.baseY + Math.sin(g.t+g.phase)*8;
+  });
+
+  cyclists.forEach(c=>{
+    c.frameT += dt*8;
+    c.x += c.vx;
+    if(c.x < 3*TILE || c.x > (LEVEL_LEN-3)*TILE){ c.vx *= -1; }
+  });
+
+  if(player.invuln>0) player.invuln--;
+
+  function hitPlayer(kind){
+    if(player.invuln>0) return;
+    state.suv--;
+    player.invuln = 60;
+    player.hitFlash = 60;
+    player.x += (player.facing>0 ? -6 : 6);
+    updateHUD();
+    if(state.suv<=0){
+      endGame('gameover');
+      return;
+    }
+    if(kind==='gabbiano') sfx.gabbiano(); else sfx.ciclista();
+  }
+
+  seagulls.forEach(g=>{
+    const dx = Math.abs((player.x+player.w/2) - g.x);
+    const dy = Math.abs((player.y+player.h/2) - g.y);
+    if(dx<7 && dy<7) hitPlayer('gabbiano');
+  });
+
+  cyclists.forEach(c=>{
+    const cyY = GROUND_Y-10;
+    const dx = Math.abs((player.x+player.w/2) - c.x);
+    const dy = Math.abs((player.y+player.h/2) - cyY);
+    if(dx<9 && dy<9) hitPlayer('ciclista');
+  });
+
+  updateHUD();
+}
+
+function updateHUD(){
+  document.getElementById('statSuv').textContent = '🚙'.repeat(Math.max(0,state.suv));
+  document.getElementById('statCemento').textContent = state.cementoMQ;
+  document.getElementById('statAlberi').textContent = state.alberiTagliati;
+  document.getElementById('statParcheggi').textContent = state.parcheggi;
+  document.getElementById('statScore').textContent = state.score;
+  document.getElementById('statTime').textContent = Math.ceil(state.timeLeft);
+}
+
+function endGame(mode){
+  if(state.ended) return;
+  state.ended = true;
+  state.running = false;
+  let bonus = 0;
+  let title, extraLine = '';
+  if(mode==='win'){
+    bonus = Math.round(state.timeLeft*4);
+    state.score += bonus;
+    title = 'Rieletto trionfalmente!';
+    extraLine = `Bonus tempo residuo: <b>+${bonus}</b><br>`;
+    sfx.vittoria();
+  } else if(mode==='gameover'){
+    title = 'GAME OVER — SUV finiti!';
+    extraLine = `Sei rimasto senza SUV da parcheggiare, i cittadini ti hanno sfiduciato.<br>`;
+    sfx.sconfitta();
+  } else {
+    title = 'Fine mandato!';
+    sfx.sconfitta();
+  }
+  const ov = document.getElementById('overlay');
+  document.getElementById('ovTitle').textContent = title;
+  document.getElementById('ovTitle').style.color = mode==='gameover' ? '#ff5c5c' : '#ffd166';
+  document.getElementById('ovStats').innerHTML =
+    `Cemento steso: <b>${state.cementoMQ} mq</b><br>` +
+    `Alberi abbattuti: <b>${state.alberiTagliati}</b><br>` +
+    `Parcheggi costruiti: <b>${state.parcheggi}</b><br>` +
+    extraLine +
+    `<br>Punteggio finale: <b style="color:#ffd166;font-size:20px">${state.score}</b>`;
+  ov.style.display = 'flex';
+}
+
+document.getElementById('ovBtn').addEventListener('click', ()=>{
+  document.getElementById('overlay').style.display='none';
+  genLevel();
+  spawnNPCs();
+  state.score=0; state.cementoMQ=0; state.alberiTagliati=0; state.parcheggi=0; state.suv=3;
+  state.timeLeft=MAX_TIME; state.running=true; state.ended=false;
+  player.x=2*TILE; player.y=GROUND_Y-22; player.vx=0; player.vy=0;
+  player.invuln=0; player.hitFlash=0;
+});
+
+// ---------- Disegno ----------
+function drawRect(x,y,w,h,c){ ctx.fillStyle=c; ctx.fillRect(Math.round(x),Math.round(y),w,h); }
+
+function drawBackground(){
+  // cielo
+  const g = ctx.createLinearGradient(0,0,0,GROUND_Y);
+  g.addColorStop(0, COL.sky2);
+  g.addColorStop(1, COL.sky1);
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  // nuvole (parallasse lento)
+  clouds.forEach(c=>{
+    const sx = c.x - state.camX*0.2;
+    const cx = ((sx % (LEVEL_LEN*TILE)) + LEVEL_LEN*TILE) % (LEVEL_LEN*TILE);
+    drawRect(cx, c.y, c.w, 6, COL.cloud);
+    drawRect(cx+4, c.y-4, c.w-8, 6, COL.cloud);
+  });
+
+  // colline lontane
+  const hillOff = state.camX*0.35;
+  for(let i=-1;i<10;i++){
+    const bx = i*70 - (hillOff % 70);
+    drawRect(bx, GROUND_Y-34, 60, 34, COL.hillFar);
+  }
+  // palazzi di sfondo
+  const buildOff = state.camX*0.55;
+  for(let i=-1;i<14;i++){
+    const bx = i*46 - (buildOff % 46);
+    const hh = 26 + ((i*37)%18);
+    const col = COL.buildingBody[i%3];
+    drawRect(bx, GROUND_Y-hh, 30, hh, col);
+    for(let wy=GROUND_Y-hh+4; wy<GROUND_Y-6; wy+=8){
+      for(let wx=bx+4; wx<bx+24; wx+=8){
+        drawRect(wx, wy, 3, 4, COL.buildingWin);
+      }
+    }
+  }
+}
+
+function drawTree(px, py){
+  drawRect(px+5, py+10, 4, 8, COL.treeTrunk);
+  drawRect(px, py, 14, 10, COL.treeLeaf1);
+  drawRect(px+2, py-4, 10, 6, COL.treeLeaf2);
+}
+
+// parcheggio "largo": disegnato dopo il terreno così sconfina sui tile adiacenti
+function drawParkingOverlay(px){
+  const cx = px + TILE/2;
+  const w = TILE*1.7;
+  drawRect(cx-w/2, GROUND_Y+2, w, 2, COL.concreteLine);
+  drawRect(cx-w/2, GROUND_Y+11, w, 2, COL.concreteLine);
+  drawRect(cx-w/2+2, GROUND_Y+2, 2, 11, COL.concreteLine);
+  drawRect(cx+w/2-4, GROUND_Y+2, 2, 11, COL.concreteLine);
+  drawRect(cx-1, GROUND_Y+2, 2, 11, COL.concreteLine);
+  // cartello "P" blu, grande
+  drawRect(cx-1, GROUND_Y-10, 2, 10, '#5a3a20');
+  drawRect(cx-5, GROUND_Y-20, 10, 11, '#1565c0');
+  drawRect(cx-3, GROUND_Y-19, 2, 9, '#fff');
+  drawRect(cx-3, GROUND_Y-19, 6, 2, '#fff');
+  drawRect(cx-3, GROUND_Y-14, 6, 2, '#fff');
+  drawRect(cx+1, GROUND_Y-17, 2, 3, '#fff');
+}
+
+function drawGroundTile(t, px){
+  if(t.type==='gap'){
+    drawRect(px, GROUND_Y, TILE, H-GROUND_Y, COL.gapBottom);
+    return;
+  }
+  if(t.cemented){
+    drawRect(px, GROUND_Y, TILE, H-GROUND_Y, COL.concrete);
+    drawRect(px, GROUND_Y+3, TILE, 2, COL.concreteLine);
+    drawRect(px+TILE/2-1, GROUND_Y+3, 2, 8, '#7c7c7c');
+  } else {
+    drawRect(px, GROUND_Y, TILE, 4, COL.grassTop);
+    drawRect(px, GROUND_Y+4, TILE, H-GROUND_Y-4, COL.dirt);
+  }
+}
+
+// sindaco: basso e cicciotto, testa grande a uovo pelata, fascia tricolore
+function drawMayor(px, py, facing, leg, flash){
+  ctx.save();
+  ctx.translate(px + 7, 0);
+  ctx.scale(facing, 1);
+  ctx.translate(-7, py);
+
+  // gambe corte e scarpe larghe (animazione a 2 frame)
+  const legOffset = leg===0 ? 0 : 1;
+  drawRect(3, 17+legOffset, 3, 3-legOffset, COL.suitDark);
+  drawRect(8, 17+(1-legOffset), 3, 3-(1-legOffset), COL.suitDark);
+  drawRect(2, 20, 5, 2, COL.shoe);
+  drawRect(7, 20, 5, 2, COL.shoe);
+
+  // braccia corte e tozze
+  drawRect(-1, 11, 3, 6, COL.suit);
+  drawRect(12, 11, 3, 6, COL.suit);
+  drawRect(-1, 16, 3, 2, COL.skin);
+  drawRect(12, 16, 3, 2, COL.skin);
+
+  // corpo tondo e panciuto
+  drawRect(1, 10, 12, 8, COL.suit);
+  drawRect(0, 12, 1, 4, COL.suit);
+  drawRect(13, 12, 1, 4, COL.suit);
+  // camicia e cravatta
+  drawRect(5, 10, 4, 3, COL.shirt);
+  drawRect(6, 11, 2, 5, COL.tie);
+  // fascia tricolore diagonale sulla pancia
+  drawRect(2, 11, 2, 2, COL.sashG);
+  drawRect(3, 13, 2, 2, COL.sashW);
+  drawRect(4, 15, 2, 2, COL.sashR);
+  drawRect(5, 17, 2, 1, COL.sashG);
+
+  // testa grande a uovo, pelata (niente capelli)
+  drawRect(3, 0, 8, 2, COL.skin);
+  drawRect(2, 2, 10, 6, COL.skin);
+  drawRect(3, 8, 8, 2, COL.skin);
+  // riflesso lucido sul cranio pelato
+  drawRect(4, 1, 2, 1, '#fff3d9');
+  // occhi
+  drawRect(5, 5, 2, 2, '#000');
+  drawRect(9, 5, 2, 2, '#000');
+  // bocca
+  drawRect(6, 8, 3, 1, '#7a4a30');
+
+  // flash quando fai un'azione (piccola scintilla)
+  if(flash>0){
+    drawRect(-4, 9, 3, 3, '#ffe066');
+    drawRect(15, 9, 3, 3, '#ffe066');
+  }
+
+  ctx.restore();
+}
+
+function drawMunicipio(px){
+  drawRect(px, GROUND_Y-50, 40, 50, '#d8c39a');
+  drawRect(px+2, GROUND_Y-54, 36, 6, '#b5305a');
+  for(let wy=GROUND_Y-44; wy<GROUND_Y-8; wy+=10){
+    for(let wx=px+5; wx<px+34; wx+=9){
+      drawRect(wx, wy, 5, 6, COL.buildingWin);
+    }
+  }
+  drawRect(px+15, GROUND_Y-16, 10, 16, '#7a5230');
+}
+
+// gabbiano antagonista: ali a "M" che sbattono
+function drawSeagull(px, py, t){
+  const flap = Math.sin(t*6)>0 ? 2 : 0;
+  ctx.fillStyle = '#f4f4f4';
+  ctx.fillRect(Math.round(px-3), Math.round(py), 6, 3);
+  ctx.fillStyle = '#e8a33d';
+  ctx.fillRect(Math.round(px+3), Math.round(py+1), 2, 1); // becco
+  ctx.fillStyle = '#333';
+  ctx.fillRect(Math.round(px-7), Math.round(py-flap), 4, 2);
+  ctx.fillRect(Math.round(px+3), Math.round(py-flap), 4, 2);
+}
+
+// ciclista antagonista: bici + omino pedalante
+function drawCyclist(px, py, facing, frameT){
+  ctx.save();
+  ctx.translate(px, 0);
+  ctx.scale(facing, 1);
+  ctx.translate(0, py);
+
+  // ruote
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath(); ctx.arc(-5, 10, 4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5, 10, 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#bbb';
+  ctx.beginPath(); ctx.arc(-5, 10, 1.4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5, 10, 1.4, 0, Math.PI*2); ctx.fill();
+
+  // telaio
+  drawRect(-5, 6, 10, 2, '#c0392b');
+  drawRect(-1, 2, 2, 8, '#c0392b');
+  drawRect(3, 3, 2, 5, '#c0392b');
+
+  // ciclista: maglietta gialla, gambe pedalanti
+  const leg = Math.sin(frameT)>0 ? 1 : -1;
+  drawRect(-3, -6, 6, 6, '#f1c40f');
+  drawRect(-2, -9, 4, 4, COL.skin);
+  drawRect(-3, -10, 4, 2, '#2c3e50'); // casco
+  drawRect(-1, 0, 2, 3+leg, '#2c3e50');
+  drawRect(1, 0, 2, 3-leg, '#2c3e50');
+
+  ctx.restore();
+}
+
+function render(){
+  drawBackground();
+
+  // gabbiani nel cielo (livello di sfondo)
+  seagulls.forEach(g=>{
+    const sx = g.x - state.camX;
+    if(sx>-20 && sx<W+20) drawSeagull(sx, g.y, g.t);
+  });
+
+  const firstTile = Math.floor(state.camX/TILE)-1;
+  const lastTile = firstTile + Math.ceil(W/TILE) + 2;
+
+  for(let i=Math.max(0,firstTile); i<=Math.min(LEVEL_LEN-1,lastTile); i++){
+    const px = i*TILE - state.camX;
+    drawGroundTile(tiles[i], px);
+    if(tiles[i].tree){
+      drawTree(px+1, GROUND_Y-14);
+    }
+  }
+  // overlay parcheggi (più larghi dei singoli tile, disegnati sopra)
+  for(let i=Math.max(0,firstTile); i<=Math.min(LEVEL_LEN-1,lastTile); i++){
+    if(tiles[i].parking){
+      drawParkingOverlay(i*TILE - state.camX);
+    }
+  }
+
+  // ciclisti sulla strada
+  cyclists.forEach(c=>{
+    const sx = c.x - state.camX;
+    if(sx>-20 && sx<W+20) drawCyclist(sx, GROUND_Y-2, c.vx<0?-1:1, c.frameT);
+  });
+
+  // municipio alla fine del livello
+  drawMunicipio(LEVEL_LEN*TILE - 45 - state.camX);
+
+  // giocatore (lampeggia se colpito da poco)
+  if(player.hitFlash<=0 || Math.floor(player.hitFlash/4)%2===0){
+    drawMayor(player.x - state.camX, player.y, player.facing, player.leg, player.actionFlash);
+  }
+}
+
+// ---------- Loop ----------
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now-last)/1000);
+  last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// fade hint dopo qualche secondo
+setTimeout(()=>{ document.getElementById('hint').style.opacity = 0; }, 6000);
+
+})();
+</script>
+</body>
+</html>
